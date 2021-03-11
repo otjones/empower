@@ -18,10 +18,10 @@ Input data can be downloaded from: (Imperial College London members only)
 https://imperiallondon-my.sharepoint.com/:u:/g/personal/otj18_ic_ac_uk/EUVA1fNztt5HlEjhSUsiYhYBukQFF0L_JFq-SfUdiV9Rpw?e=dJhLLb
 
 Raw data results contain:
-Model iteration 1 through 10 (omitting 7 and 8) for 1 week of spring
-Results for each building sorted into sub-folders
-Contains summary for each model iteration, CSV totals data and plots of interest
-Also contains spring, summer, autumn and winter results for final model
+Model iteration 1 through 10 (omitting 7 and 8) for 1 week of spring.
+Results for each building sorted into sub-folders.
+Contains summary for each model iteration, CSV totals data and plots of interest.
+Also contains spring, summer, autumn and winter results for final model.
 
 *Warning*
 Raw data results is a 0.98 GB download, and 4.52 GB once extracted
