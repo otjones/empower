@@ -1,0 +1,1635 @@
+print("\nStarting...")
+
+import pandas as pd
+from matplotlib import pyplot as plt
+import os
+import statistics
+
+def time(minutes):
+    print("{}:{}".format(str(int(minutes/60)).zfill(2), str(minutes%60).zfill(2)))
+
+class environment():
+    def __init__(self, name, dwellings):
+        print("\nEnvironment initialised")
+        self.name = name
+        self.system_list = []
+        self.queue = []
+        self.suppliers = []
+        self.dwellings = dwellings
+        self.pv_area = 0
+
+    def add_panel(self, size):
+        self.pv_area += size
+
+    ### DEPRECIATED TRADING FUNCTION ###
+
+    def exchange_simple_system(self, minute):
+
+        for house in self.queue:
+            for supplier in self.suppliers:
+                delta = house.net + supplier.net
+                if delta > 0 and supplier.net !=0:
+                    house.buy_across(supplier, supplier.system, -supplier.net)
+                elif delta <= 0 and supplier.net !=0:
+                    house.buy_across(supplier, supplier.system, house.net)
+                    break
+
+            if house.net != 0:
+                for system in self.system_list:
+                    if system.panel_pwr_ins >= house.net:
+                        house.buy_across("panel", system, house.net)
+                    else:
+                        pass
+
+            if house.net != 0:
+                for system in self.system_list:
+                    if system.battery == True:
+                        if house.net < system.battery_pwr_ins and house.net/60 < system.battery_cap and system.battery_cap > 0:
+                            house.buy_across("battery", system, house.net)
+                        else:
+                            house.buy("grid", house.net)
+                    else:
+                        pass
+
+        for supplier in self.suppliers:
+            if supplier.net != 0:
+                for system in self.system_list:
+                    if system.battery == True:
+                        if system.battery_cap - supplier.net/60 < system.battery_max:
+                            supplier.sell_across("battery", system, -supplier.net)
+                        else:
+                            pass
+                    else:
+                        pass
+            else:
+                pass
+            supplier.wasted[supplier.system.time] = -supplier.net
+                
+        for system in self.system_list:
+            system.panel_wasted[system.time] = system.panel_pwr_ins
+
+        self.queue = []
+        self.suppliers = []
+
+    ### DEPRECIATED TRADING FUNCTION ### 
+
+    def exchange_weighted_system(self, minute):
+
+        sorted_queue = sorted(self.queue, key=lambda x: sum(x.bought_battery_super) + sum(x.bought_dlt_super), reverse=True)
+        sorted_suppliers = sorted(self.suppliers, key=lambda x: sum(x.sold_dlt_super), reverse=False)
+
+        for house in sorted_queue:
+            for supplier in sorted_suppliers:
+                delta = house.net + supplier.net
+                if delta > 0 and supplier.net !=0:
+                    house.buy_across(supplier, supplier.system, -supplier.net)
+                elif delta <= 0 and supplier.net !=0:
+                    house.buy_across(supplier, supplier.system, house.net)
+                    break
+
+            if house.net != 0:
+                for system in self.system_list:
+                    if system.panel_pwr_ins >= house.net:
+                        house.buy_across("panel", system, house.net)
+                    else:
+                        pass
+
+            if house.net != 0:
+                for system in self.system_list:
+                    if system.battery == True:
+                        if house.net < system.battery_pwr_ins and house.net/60 < system.battery_cap and system.battery_cap > 0:
+                            house.buy_across("battery", system, house.net)
+                        else:
+                            pass
+                    else:
+                        pass
+            
+            if house.net != 0:
+                house.buy("grid", house.net)
+
+        sorted_suppliers = sorted(self.suppliers, key=lambda x: sum(x.sold_battery_super), reverse=False)
+
+        for supplier in self.suppliers:
+            if supplier.net != 0:
+                for system in self.system_list:
+                    if system.battery == True:
+                        if system.battery_cap - supplier.net/60 < system.battery_max:
+                            supplier.sell_across("battery", system, -supplier.net)
+                        else:
+                            pass
+                    else:
+                        pass
+            else:
+                pass
+            supplier.wasted[supplier.system.time] = -supplier.net
+                
+        for system in self.system_list:
+            system.panel_wasted[system.time] = system.panel_pwr_ins
+            system.battery_level[system.time] = system.battery_cap
+
+        self.queue = []
+        self.suppliers = []
+
+    ### INTER-BUILDINGS TRADING FUNCTION ###
+        
+    def exchange_system_complete(self):
+        
+        # initialise for current time #
+
+        for system in self.system_list:
+            system.panel_pwr_ins = system.panel_pwr_list[system.time]
+            system.battery_pwr_ins = system.battery_pwr
+
+        # initialise the queue #
+
+        buying_queue = []
+        selling_queue = []
+        for system in self.system_list:
+            for house in system.household_list:
+                house.evaluate(system.time)
+            buying_queue = buying_queue + system.queue
+            selling_queue = selling_queue + system.suppliers
+
+        sorted_queue = sorted(buying_queue, key=lambda x: (sum(x.bought_dlt_super) + sum(x.bought_dlt_local) + sum(x.bought_battery_super) + sum(x.bought_battery_local)) / x.occupants**2, reverse=False)
+        sorted_suppliers = sorted(selling_queue, key=lambda x: sum(x.sold_dlt_local) + sum(x.sold_dlt_super) + sum(x.sold_battery_local) + sum(x.sold_battery_super), reverse=False)
+        
+        ### QUEUE ###
+
+        # household queue check #
+
+        for house in sorted_queue:
+            for supplier in sorted_suppliers:
+                delta = house.net + supplier.net
+                if delta > 0 and supplier.net !=0:
+                    if house.system == supplier.system:
+                        house.buy(supplier, -supplier.net)
+                    else:
+                        house.buy_across(supplier, supplier.system, -supplier.net)
+                elif delta <= 0 and supplier.net !=0:
+                    if house.system == supplier.system:
+                        house.buy(supplier, house.net)
+                    else:
+                        house.buy_across(supplier, supplier.system, house.net)
+                    
+                    break
+
+        # system solar panels check #
+
+        ### COMMUNAL SOLAR PANELS REMOVED FROM MODEL ###
+
+            """
+            if house.net != 0:
+                for system in self.system_list:
+                    if system.panel_pwr_ins >= house.net:
+                        if house.system == system:
+                            house.buy("panel", house.net)
+                        else:
+                            house.buy_across("panel", system, house.net)
+                    else:
+                        pass
+            else:
+                pass
+            """
+        # system batteries check #
+
+            if house.net != 0:
+                for system in self.system_list:
+                    if system.battery_pwr_ins >= house.net and system.battery_cap >= house.net/60:
+                        if house.system == system:
+                            house.buy("battery", house.net)
+                        else:
+                            house.buy_across("battery", system, house.net)
+                    else:
+                        pass
+            else:
+                pass
+
+        # fall back #
+
+            if house.net != 0:
+                house.buy("grid", house.net)
+
+        ### SUPPLIERS ###
+
+        for supplier in sorted_suppliers:
+            if supplier.net != 0:
+                for system in self.system_list:
+                    if system.battery == True:
+                        if system.battery_cap - supplier.net/60 < system.battery_max:
+                            if supplier.system == system:
+                                supplier.sell("battery", -supplier.net)
+                            else:
+                                supplier.sell_across("battery", system, -supplier.net)
+                        else:
+                            pass
+                    else:
+                        pass
+            else:
+                pass
+
+            ### DO I SELL MY ENERGY IS DOES THE COUNCIL SELL MY ENERGY ###
+
+            supplier.grid_export_pool(-supplier.net)
+            #supplier.wasted[supplier.system.time] = -supplier.net
+
+        ### SYSTEM ###
+
+        ### COMMUNAL SOLAR PANELS REMOVED FROM MODEL ###
+
+        """
+        for system in self.system_list:
+            battery_space = system.battery_max - system.battery_cap
+            if battery_space != 0:
+                for system_sub in self.system_list:
+                    if system_sub.panel_pwr_ins/60 >= battery_space and system_sub.panel_pwr_ins != 0:
+                        #print("FILLED: System {} gave System {} {} power for their battery".format(system_sub.desc, system.desc, battery_space))
+                        system.battery_cap += battery_space
+                        system_sub.panel_pwr_ins -= battery_space*60
+                        break
+                    elif system_sub.panel_pwr_ins/60 < battery_space and system_sub.panel_pwr_ins != 0:
+                        #print("PARTIAL: System {} gave System {} {} power for their battery".format(system_sub.desc, system.desc, system_sub.panel_pwr_ins))
+                        system.battery_cap += system_sub.panel_pwr_ins/60
+                        system_sub.panel_pwr_ins = 0
+        """
+
+        # log status #
+
+        for system in self.system_list:
+            system.panel_exported[system.time] = system.panel_pwr_ins
+
+            #system.panel_wasted[system.time] = system.panel_pwr_ins
+            system.battery_level[system.time] = system.battery_cap
+            system.queue = []
+            system.suppliers = []
+
+    def compile(self):
+
+        totals = []
+        savings = []
+        demands = []
+        grid = []
+        exported = []
+
+        for system in self.system_list:
+            print("Exporting data for '{}'...".format(system.desc))
+            system_dict = {
+                "Dwelling": [],
+                "Occupants": [],
+                "Income": [],
+
+                "Demand": [],
+                "Solar": [],
+                "Wasted": [],
+
+                "Bought Grid /kWh": [],
+                "Bought Grid /GBP": [],
+                "Sold Grid /kWh": [],
+                "Sold Grid /GBP": [],
+                "Percentage from Grid" : [],
+
+                "Bought Local DLT /kWh": [],
+                "Bought Local DLT /GBP": [],
+                "Bought Super DLT /kWh": [],
+                "Bought Super DLT /GBP": [],
+                "Sold Local DLT /kWh": [],
+                "Sold Local DLT /GBP": [],
+                "Sold Super DLT /kWh": [],
+                "Sold Super DLT /GBP": [],
+
+                "Bought Local Battery /kWh": [],
+                "Bought Local Battery /GBP": [],
+                "Bought Super Battery /kWh": [],
+                "Bought Super Battery /GBP": [],
+                "Sold Local Battery /kWh": [],
+                "Sold Local Battery /GBP": [],
+                "Sold Super Battery /kWh": [],
+                "Sold Super Battery /GBP": [],
+
+                "Bought Local System Panel /kWh": [],
+                "Bought Local System Panel /GBP": [],
+                "Bought Super System Panel /kWh": [],
+                "Bought Super System Panel /GBP": [],
+
+                "Net Spend" : [],
+                "Saving" : []
+            }
+
+            for house in system.household_list:
+                system_dict["Dwelling"].append(house.address)
+                system_dict["Occupants"].append(house.occupants)
+                system_dict["Income"].append(house.income)
+
+                system_dict["Demand"].append(house.demand_total/1000)
+                system_dict["Solar"].append(house.solar_total/1000)
+                system_dict["Wasted"].append(house.wasted_total/1000)
+
+                system_dict["Bought Grid /kWh"].append(house.bought_grid_total/1000)
+                system_dict["Bought Grid /GBP"].append(house.expend_grid)
+                system_dict["Sold Grid /kWh"].append(house.grid_export_total/1000)
+                system_dict["Sold Grid /GBP"].append(house.earn_grid)
+                system_dict["Percentage from Grid"].append( (house.bought_grid_total/1000) / (house.demand_total/1000) *100 )
+                
+                system_dict["Bought Local DLT /kWh"].append(house.bought_dlt_local_total/1000)
+                system_dict["Bought Local DLT /GBP"].append(house.expend_dlt_local)
+                system_dict["Bought Super DLT /kWh"].append(house.bought_dlt_super_total/1000)
+                system_dict["Bought Super DLT /GBP"].append(house.expend_dlt_super)
+                system_dict["Sold Local DLT /kWh"].append(house.sold_dlt_local_total/1000)
+                system_dict["Sold Local DLT /GBP"].append(house.earn_dlt_local)
+                system_dict["Sold Super DLT /kWh"].append(house.sold_dlt_super_total/1000)
+                system_dict["Sold Super DLT /GBP"].append(house.earn_dlt_super)
+
+                system_dict["Bought Local Battery /kWh"].append(house.bought_battery_local_total/1000)
+                system_dict["Bought Local Battery /GBP"].append(house.expend_battery_local)
+                system_dict["Bought Super Battery /kWh"].append(house.bought_battery_super_total/1000)
+                system_dict["Bought Super Battery /GBP"].append(house.expend_battery_super)
+                system_dict["Sold Local Battery /kWh"].append(house.sold_battery_local_total/1000)
+                system_dict["Sold Local Battery /GBP"].append(house.earn_battery_local)
+                system_dict["Sold Super Battery /kWh"].append(house.sold_battery_local_total/1000)
+                system_dict["Sold Super Battery /GBP"].append(house.earn_battery_super)
+
+                system_dict["Bought Local System Panel /kWh"].append(house.bought_panel_local_total/1000)
+                system_dict["Bought Local System Panel /GBP"].append(house.expend_panel_local)
+                system_dict["Bought Super System Panel /kWh"].append(house.bought_panel_super_total/1000)
+                system_dict["Bought Super System Panel /GBP"].append(house.expend_panel_super)
+
+                system_dict["Net Spend"].append(house.net_spend)
+                system_dict["Saving"].append(house.percent)
+
+            
+            totals = totals + system_dict["Net Spend"]
+            savings = savings + system_dict["Saving"]
+            demands = demands + system_dict["Demand"]
+            grid = grid + system_dict["Bought Grid /kWh"]
+            exported = exported + system_dict["Sold Grid /kWh"]
+
+
+            current_dir = os.getcwd()
+            new_dir = system.desc
+            path = os.path.join(current_dir, new_dir)
+
+            try:
+                os.mkdir(path)
+            except OSError:
+                pass
+
+            df = pd.DataFrame(system_dict)
+            df.to_csv(os.path.join(path,"Houses_Totals.csv"))
+
+        summary = {}
+        summary["Net Spends"] = totals
+        summary["Savings"] = savings
+        summary["Demand"] = demands
+        summary["Grid"] = grid
+        summary["Exported"] = exported
+
+        df_s = pd.DataFrame(summary)
+        df_s.to_csv("Summary.csv")
+
+
+class system():
+    def __init__(self, env, id, desc, import_length, length):
+        self.time = 0
+        self.id = id
+        self.desc = desc
+        self.household_list = []
+        self.length = length
+        self.import_length = import_length
+        self.queue = []
+        self.suppliers = []
+        env.system_list.append(self)
+        self.environment = env
+
+        # PRICES #
+        self.grid_price = 0.00015
+        self.grid_sell = 0.00004
+        self.dlt_price = 0.00007
+        self.battery_price = 0.00007
+
+        # BATTERY #
+        self.battery = False
+        self.battery_pwr = 0
+        self.battery_pwr_ins = 0
+        self.battery_cap = 0
+        self.battery_max = 0
+
+        # PANEL #
+        self.panel_pwr_ins = 0
+        self.panel_pwr_list = [0]*self.length
+
+        # RECORDS #
+        self.demand = [0]*self.length
+        self.solar = [0]*self.length
+        self.wasted_house = [0]*self.length
+        self.bought_grid = [0]*self.length
+        self.sold_grid = [0]*self.length
+
+        self.bought_dlt_local = [0]*self.length
+        self.bought_dlt_super = [0]*self.length
+        self.sold_dlt_local = [0]*self.length
+        self.sold_dlt_super = [0]*self.length
+
+        self.battery_chg_local = [0]*self.length
+        self.battery_chg_super = [0]*self.length
+        self.battery_use_local = [0]*self.length
+        self.battery_use_super = [0]*self.length
+        self.battery_level = [0]*self.length
+
+        self.panel_used_local = [0]*self.length
+        self.panel_used_super = [0]*self.length
+        self.panel_wasted = [0]*self.length
+        self.panel_exported = [0]*self.length
+
+        # TOTALS #
+        self.demand_total = 0
+        self.solar_total = 0
+        self.wasted_house_total = 0
+        self.bought_grid_total = 0
+        self.sold_grid_total = 0 #
+
+        self.bought_dlt_local_total = 0
+        self.bought_dlt_super_total = 0
+        self.sold_dlt_local_total = 0
+        self.sold_dlt_super_total = 0
+
+        self.battery_chg_local_total = 0
+        self.battery_chg_super_total = 0
+        self.battery_use_local_total = 0
+        self.battery_use_super_total = 0
+
+        self.panel_used_local_total = 0
+        self.panel_used_super_total = 0
+        self.panel_wasted_total = 0
+        self.panel_exported_total = 0
+
+        self.grid_export_total = 0
+
+        print("\n{} Created".format(self.desc))
+
+    def populate(self, household_path, demand_path, pv_path, pv_size, pv_ref):
+
+        factor = pv_size/pv_ref
+
+        sys_households = pd.read_csv(household_path)
+        sys_households_demand = pd.read_csv(demand_path)
+        sys_households_demand = sys_households_demand * 0.91
+        sys_households_pv = pd.read_csv(pv_path)
+        sys_households_pv = sys_households_pv * factor * 0.8
+
+        demand = sys_households_demand[str(1)].tolist()
+        solar = sys_households_pv[str(1)].tolist()
+
+        print("{}: Initialising Dwellings...".format(self.desc))
+        for index, row in sys_households.iterrows():
+            household(row[0], row[1], solar[:self.import_length], [demand[i] for i in range(index*self.import_length, index*self.import_length + self.import_length)], self)
+
+    def add_day(self, day, demand_path, pv_path, pv_size, pv_ref):
+
+        factor = pv_size/pv_ref
+        
+        households_demand = pd.read_csv(demand_path)
+        households_demand = households_demand * 0.91
+        households_pv = pd.read_csv(pv_path)
+        households_pv = households_pv * factor * 0.8
+
+        demand = households_demand[str(day)].tolist()
+        solar = households_pv[str(day)].tolist()
+
+        index = 0
+        print("{}: Adding Day {}...".format(self.desc, day))
+        for house in self.household_list:
+            house.demand = house.demand + [demand[i] for i in range(index*self.import_length, index*self.import_length + self.import_length)]
+            house.solar = house.solar + solar[:self.import_length]
+            index += 1
+
+    def add_battery(self,pwr,cap, maximum):
+        print("{}: Adding Battery Capacity...".format(self.desc))
+        self.battery = True
+        self.battery_pwr = pwr
+        self.battery_pwr_ins = pwr
+        self.battery_cap = cap
+        self.battery_max = maximum
+        self.battery_level = [cap]*self.length
+
+    def distribute_panel(self, dwellings, pv_local_ref):
+        print("{}: Adding Panel Capacity...".format(self.desc))
+
+        pv_size = self.environment.pv_area * dwellings / self.environment.dwellings
+
+        factor = pv_size/pv_local_ref
+
+        self.panel_pwr_list = [x*factor for x in self.household_list[0].solar]
+
+    def info(self, print_all=False, dump = False):
+
+        self.demand_total = 0
+        self.solar_total = 0
+        self.wasted_house_total = 0
+        self.bought_grid_total = 0
+        self.sold_grid_total = 0
+
+        self.bought_dlt_local_total = 0
+        self.bought_dlt_super_total = 0
+
+        self.sold_dlt_local_total = 0
+        self.sold_dlt_super_total = 0
+
+        self.battery_chg_local_total = 0
+        self.battery_chg_super_total = 0
+        self.battery_use_local_total = 0
+        self.battery_use_super_total = 0
+
+        self.panel_used_local_total = 0
+        self.panel_used_super_total = 0
+        self.panel_wasted_total = 0
+        self.panel_exported_total = 0
+
+        self.grid_export_total = 0
+
+        for house in self.household_list:
+            house.info(print_all)
+
+            self.demand_total += house.demand_total
+            self.solar_total += house.solar_total
+            self.wasted_house_total += house.wasted_total
+            self.bought_grid_total += house.bought_grid_total
+            self.sold_grid_total += house.grid_export_total
+
+            self.bought_dlt_local_total += house.bought_dlt_local_total
+            self.bought_dlt_super_total += house.bought_dlt_super_total
+            self.sold_dlt_local_total += house.sold_dlt_local_total
+            self.sold_dlt_super_total += house.sold_dlt_super_total
+
+            self.battery_chg_local_total += house.sold_battery_local_total
+            self.battery_chg_super_total += house.sold_battery_super_total
+            self.battery_use_local_total += house.bought_battery_local_total
+            self.battery_use_super_total += house.bought_battery_super_total
+
+            self.panel_used_local_total += house.bought_panel_local_total
+            self.panel_used_super_total += house.bought_panel_super_total
+
+        self.panel_wasted_total = sum(self.panel_wasted) /60
+        self.panel_exported_total = sum(self.panel_exported) /60
+
+        self.panel_exported_total += self.wasted_house_total        # Does the Grid get the houses solar?
+
+        if dump:
+
+            info = ["Total Dwelling Demand: {:.3f}kWh".format(self.demand_total/1000),
+                    "Total Dwelling Solar: {:.3f}kWh".format(self.solar_total/1000),
+                    "Total Dwelling Wasted: {:.3f}kWh".format(self.wasted_house_total/1000),
+                    "Total Dwelling Bought Grid: {:.3f}kWh".format(self.bought_grid_total/1000),
+                    "Total Dwelling Sold Grid: {:.3f}kWh".format(self.sold_grid_total/1000),
+                    "Total Dwelling Bought Local DLT: {:.3f}kWh".format(self.bought_dlt_local_total/1000),
+                    "Total Dwelling Bought Super DLT: {:.3f}kWh".format(self.bought_dlt_super_total/1000),
+                    "Total Dwelling Sold Local DLT: {:.3f}kWh".format(self.sold_dlt_local_total/1000),
+                    "Total Dwelling Sold Super DLT: {:.3f}kWh".format(self.sold_dlt_super_total/1000),
+                    "Total Dwelling Bought Local Battery: {:.3f}kWh".format(self.battery_use_local_total/1000),
+                    "Total Dwelling Bought Super Battery: {:.3f}kWh".format(self.battery_use_super_total/1000),
+                    "Total Dwelling Sold Local Battery: {:.2f}kWh".format(self.battery_chg_local_total/1000),
+                    "Total Dwelling Sold Super Battery: {:.2f}kWh".format(self.battery_chg_super_total/1000),
+                    "Total Dwelling Bought Local System Panel {:.3f}kWh".format(self.panel_used_local_total/1000),
+                    "Total Dwelling Bought Super System Panel {:.3f}kWh".format(self.panel_used_super_total/1000),
+                    "Total Panel Energy Exported to Grid: {:.3f}kWh".format(self.panel_exported_total/1000),
+                    "Total Panel Energy Exported to Grid {:.3f}GBP".format(self.panel_exported_total * self.grid_sell),
+                    "Total Panel Energy Wasted {}kWh".format(self.panel_wasted_total/1000),
+                    "Average Dwelling Saving Percent: {:.3f}%".format(sum([x.percent for x in self.household_list])/len(self.household_list)),
+                    "Dwelling Saving Standard Deviation: {:.3f}%".format(statistics.pstdev([x.percent for x in self.household_list])),
+                    "Average Dwelling Saving Absolute: {:.3f}GBP ({:.3f}GBP vs {:.3f}GBP)".format(sum([x.demand_total * self.grid_price - x.net_spend for x in self.household_list])/len(self.household_list), sum(x.demand_total * self.grid_price for x in self.household_list)/len(self.household_list), sum(x.net_spend for x in self.household_list)/len(self.household_list)),
+                    "Average Reliance on Grid: {:.3}%".format(sum([ (house.bought_grid_total/1000) / (house.demand_total/1000) *100 for house in self.household_list ]) / len(self.household_list)),
+                    "Standard Deviation of Reliance: {:.3}%".format(statistics.pstdev([ (house.bought_grid_total/1000) / (house.demand_total/1000) *100 for house in self.household_list ]))
+            ]
+
+            current_dir = os.getcwd()
+            new_dir = self.desc
+            path = os.path.join(current_dir, new_dir)
+
+            try:
+                os.mkdir(path)
+            except OSError:
+                pass
+            
+            with open(os.path.join(path,"Summary.txt"), "w") as file1:
+                file1.writelines("%s\n" % i for i in info)
+            print("Exporting {} Summary...".format(self.desc))
+
+        else:
+            print("\nSystem {}:".format(self.desc))
+
+            print("Total Demand: {:.3f}kWh".format(self.demand_total/1000))
+            print("Total Solar: {:.3f}kWh".format(self.solar_total/1000))
+            print("Total Wasted: {:.3f}kWh".format(self.wasted_house_total/1000))
+            print("Total Bought Grid: {:.3f}kWh" .format(self.bought_grid_total/1000))
+
+            print("Total Bought Local DLT: {:.3f}kWh".format(self.bought_dlt_local_total/1000))
+            print("Total Bought Super DLT: {:.3f}kWh".format(self.bought_dlt_super_total/1000))
+            print("Total Sold Local DLT: {:.3f}kWh".format(self.sold_dlt_local_total/1000))
+            print("Total Sold Super DLT: {:.3f}kWh".format(self.sold_dlt_super_total/1000))
+
+            print("Total Bought Local Battery: {:.3f}kWh".format(self.battery_use_local_total/1000))
+            print("Total Bought Super Battery: {:.3f}kWh".format(self.battery_use_super_total/1000))
+            print("Total Sold Local Battery: {:.2f}kWh".format(self.battery_chg_local_total/1000))
+            print("Total Sold Super Battery: {:.2f}kWh".format(self.battery_chg_super_total/1000))
+
+            print("Total Bought Local System Panel {:.3f}kWh".format(self.panel_used_local_total/1000))
+            print("Total Bought Super System Panel {:.3f}kWh".format(self.panel_used_super_total/1000))
+
+            print("Total Energy Exported to Grid £{:.3f}".format(self.grid_export_total * self.grid_sell))
+
+    def plot(self, start, end, dump = False):
+
+        for i in range(start, end):
+            for house in self.household_list:
+                self.demand[i] += house.demand[i]
+            for house in self.household_list:
+                self.solar[i] += house.solar[i]
+            for house in self.household_list:
+                self.wasted_house[i] += house.wasted[i]
+            for house in self.household_list:
+                self.bought_grid[i] += house.bought_grid[i]
+            for house in self.household_list:
+                self.sold_grid[i] += house.grid_export[i]
+
+            for house in self.household_list:
+                self.bought_dlt_local[i] += house.bought_dlt_local[i]
+            for house in self.household_list:
+                self.bought_dlt_super[i] += house.bought_dlt_super[i]
+            for house in self.household_list:
+                self.sold_dlt_local[i] += house.sold_dlt_local[i]
+            for house in self.household_list:
+                self.sold_dlt_super[i] += house.sold_dlt_super[i]
+
+            for house in self.household_list:
+                self.battery_chg_local[i] += house.sold_battery_local[i]
+            for house in self.household_list:
+                self.battery_chg_super[i] += house.sold_battery_super[i]
+            for house in self.household_list:
+                self.battery_use_local[i] += house.bought_battery_local[i]
+            for house in self.household_list:
+                self.battery_use_super[i] += house.bought_battery_super[i]
+
+            for house in self.household_list:
+                self.panel_used_local[i] += house.bought_panel_local[i]
+            for house in self.household_list:
+                self.panel_used_super[i] += house.bought_panel_super[i]
+
+        current_dir = os.getcwd()
+        new_dir = self.desc
+        path = os.path.join(current_dir, new_dir)
+
+        if dump:
+            print("Exporting {} Time Charts...".format(self.desc))
+            try:
+                os.mkdir(path)
+            except OSError:
+                pass
+
+        X = [i for i in range(start, end)]
+
+        plt.figure(1)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.plot(X,self.demand)
+        plt.title("{}: Demand from houses /kW".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.solar)
+        plt.title("{}: Solar from houses /kW".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.sold_grid)
+        plt.title("{}: House sold to grid /kW".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.bought_grid)
+        plt.title("{}: House bought from grid /kW".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Time General"), dpi=1200)
+            plt.clf()
+
+        plt.figure(2)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.plot(X,self.bought_dlt_local)
+        plt.title("{}: Locally bought DLT /kW".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.bought_dlt_super)
+        plt.title("{}: Externally bought DLT /kW".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.sold_dlt_local)
+        plt.title("{}: Locally sold DLT /kW".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.sold_dlt_super)
+        plt.title("{}: Externally sold DLT /kW".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Time DLT"), dpi=1200)
+            plt.clf()
+
+        plt.figure(3)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.plot(X,self.battery_chg_local)
+        plt.title("{}: Battery charge locally /kW".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.battery_chg_super)
+        plt.title("{}: Battery charge externally /kW".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.battery_use_local)
+        plt.title("{}: Battery used locally /kW".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.battery_use_super)
+        plt.title("{}: Battery used externally /kW".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Time Battery"), dpi=1200)
+            plt.clf()
+
+        plt.figure(4)
+        plt.rc('font', size=3) 
+        plt.plot(X,self.battery_level)
+        plt.title("{}: Battery charge /kWh".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Time Battery Charge"), dpi=1200)
+            plt.clf()
+
+        plt.figure(5)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.plot(X,self.panel_used_local)
+        plt.title("{}: Panel used locally /kW".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.panel_used_super)
+        plt.title("{}: Panel used externaly /kW".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.panel_wasted)
+        plt.title("{}: Panel wasted /kW".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.panel_exported)
+        plt.title("{}: Panel exported /kW".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Time Panel"), dpi=1200)
+            plt.clf()
+
+        if not dump:
+            plt.show()
+
+    ### BUILDING ONLY EXCHANGE CYCLE ###
+
+    def exchange_simple(self, minute):
+        self.panel_pwr_ins = self.panel_pwr_list[self.time]
+        self.battery_pwr_ins = self.battery_pwr
+
+        buying_queue = self.queue
+        selling_queue = self.suppliers
+
+        self.queue = sorted(buying_queue, key=lambda x: sum(x.bought_dlt_super) + sum(x.bought_dlt_local) + sum(x.bought_battery_super) + sum(x.bought_battery_local), reverse=True)
+        self.suppliers = sorted(selling_queue, key=lambda x: sum(x.sold_dlt_local) + sum(x.sold_dlt_super) + sum(x.sold_battery_local) + sum(x.sold_battery_super), reverse=False)
+
+        for house in self.queue:
+            for supplier in self.suppliers:
+                delta = house.net + supplier.net
+                if delta > 0 and supplier.net !=0:
+                    #print("{} bought {}W from {}".format(house.address, supplier.net, supplier.address))
+                    house.buy(supplier, -supplier.net)
+                    #print("{} now has {}W net, and {} now has {}W net".format(house.address, house.net, supplier.address, supplier.net))
+                elif delta <= 0 and supplier.net !=0:
+                    #print("{} bought {}W from {} and doesn't need more".format(house.address, house.net, supplier.address))
+                    house.buy(supplier, house.net)
+                    #print("{} now has {}W net, and {} now has {}W net".format(house.address, house.net, supplier.address, supplier.net))
+                    break
+                else:
+                    #print("nothing")
+                    pass
+
+            if house.net > 0:
+                if self.panel_pwr_ins >= house.net:
+                    house.buy("panel", house.net)
+
+            if house.net > 0:
+                if house.net < self.battery_pwr_ins and house.net/60 < self.battery_cap and self.battery_cap > 0:
+                    house.buy("battery", house.net)
+                else:
+                    house.buy("grid", house.net)
+
+        for supplier in self.suppliers:
+            if supplier.net != 0:
+                if self.battery_cap - supplier.net/60 < self.battery_max:
+                    supplier.sell("battery", -supplier.net)
+                else:
+
+                    ### DO I SELL MY ENERGY IS DOES THE COUNCIL SELL MY ENERGY ###
+
+                    supplier.grid_export_pool(-supplier.net)
+                    #supplier.wasted[self.time] = -supplier.net
+            else:
+                pass
+
+        ### COMMUNAL PANELS REMOVED FROM MODEL ###
+
+        self.panel_exported[self.time] = self.panel_pwr_ins
+        #wasted_solar = self.panel_pwr_list[self.time] - self.panel_pwr_ins
+        #self.panel_wasted[self.time] = wasted_solar
+
+        self.queue = []
+        self.suppliers = []
+        self.battery_level[self.time] = self.battery_cap
+
+    def exchange_simple_super(self, minute):    
+        self.panel_pwr_ins = self.panel_pwr_list[self.time]
+        self.battery_pwr_ins = self.battery_pwr
+
+        for house in self.queue:
+            for supplier in self.suppliers:
+                delta = house.net + supplier.net
+                if delta > 0 and supplier.net !=0:
+                    house.buy(supplier, -supplier.net)
+                elif delta <= 0 and supplier.net !=0:
+                    house.buy(supplier, house.net)
+                    break
+                else:
+                    pass
+
+            if house.net != 0:
+                if self.panel_pwr_ins >= house.net:
+                    house.buy("panel", house.net)
+                else:
+                    if self.battery == True:
+                        if house.net < self.battery_pwr_ins and house.net/60 < self.battery_cap and self.battery_cap > 0:
+                            house.buy("battery", house.net)
+                        else:
+                            pass
+
+        if self.battery == True:
+            for supplier in self.suppliers:
+                if supplier.net != 0:
+                    if self.battery_cap - supplier.net/60 < self.battery_max:
+                        supplier.sell("battery", -supplier.net)
+                    else:
+                        pass
+                else:
+                    pass
+
+        self.queue = []
+        self.suppliers = []
+        self.battery_level[self.time] = self.battery_cap
+
+    def exchange_weighted_super(self, minute):  
+      
+        self.panel_pwr_ins = self.panel_pwr_list[self.time]
+        self.battery_pwr_ins = self.battery_pwr
+
+        sorted_queue = sorted(self.queue, key=lambda x: sum(x.bought_battery_local) + sum(x.bought_dlt_local), reverse=True)
+        sorted_suppliers = sorted(self.suppliers, key=lambda x: sum(x.sold_dlt_local), reverse=False)
+
+        for house in sorted_queue:
+            for supplier in sorted_suppliers:
+                delta = house.net + supplier.net
+                if delta > 0 and supplier.net !=0:
+                    house.buy(supplier, -supplier.net)
+                elif delta <= 0 and supplier.net !=0:
+                    house.buy(supplier, house.net)
+                    break
+                else:
+                    pass
+
+            if house.net != 0:
+                if self.panel_pwr_ins >= house.net:
+                    house.buy("panel", house.net)
+                else:
+                    if self.battery == True:
+                        if house.net < self.battery_pwr_ins and house.net/60 < self.battery_cap and self.battery_cap > 0:
+                            house.buy("battery", house.net)
+                        else:
+                            pass
+
+        sorted_suppliers = sorted(self.suppliers, key=lambda x: sum(x.sold_battery_local), reverse=False)
+        
+        if self.battery == True:
+            for supplier in sorted_suppliers:
+                if supplier.net != 0:
+                    if self.battery_cap - supplier.net/60 < self.battery_max:
+                        supplier.sell("battery", -supplier.net)
+                    else:
+                        pass
+                else:
+                    pass
+
+        self.queue = []
+        self.suppliers = []
+
+    def plot_houses(self, dump=False):
+
+        X = [str(self.household_list[i].address) for i in range(len(self.household_list))]
+
+        Y_bought_dlt_local = [self.household_list[i].expend_dlt_local for i in range(len(self.household_list))]
+        Y_bought_dlt_super = [self.household_list[i].expend_dlt_super for i in range(len(self.household_list))]
+        Y_sold_dlt_local = [self.household_list[i].earn_dlt_local for i in range(len(self.household_list))]
+        Y_sold_dlt_super = [self.household_list[i].earn_dlt_super for i in range(len(self.household_list))]
+
+        Y_bought_battery_local = [self.household_list[i].expend_battery_local for i in range(len(self.household_list))]
+        Y_bought_battery_super = [self.household_list[i].expend_battery_super for i in range(len(self.household_list))]
+        Y_sold_battery_local = [self.household_list[i].earn_battery_local for i in range(len(self.household_list))]
+        Y_sold_battery_super = [self.household_list[i].earn_battery_super for i in range(len(self.household_list))]
+
+        Y_bought_panel_local = [self.household_list[i].expend_panel_local for i in range(len(self.household_list))]
+        Y_bought_panel_super = [self.household_list[i].expend_panel_super for i in range(len(self.household_list))]
+
+        Y_expend = [self.household_list[i].net_spend for i in range(len(self.household_list))]
+        Y_expend_grid = [self.household_list[i].expend_grid for i in range(len(self.household_list))]
+        Y_percent = [self.household_list[i].percent for i in range(len(self.household_list))]
+        Y_price_per = [self.household_list[i].net_spend*1000 / self.household_list[i].demand_total for i in range(len(self.household_list))]
+        Y_earn_grid = [self.household_list[i].earn_grid for i in range(len(self.household_list))]
+
+        current_dir = os.getcwd()
+        new_dir = self.desc
+        path = os.path.join(current_dir, new_dir)
+
+        if dump:
+            print("Exporting House Charts for {}...".format(self.desc))
+            try:
+                os.mkdir(path)
+            except OSError:
+                pass
+
+        plt.figure(1)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.bar(X,Y_bought_dlt_local)
+        plt.xticks(rotation="vertical")
+
+        plt.title("{}: Houses spent on local DLT /£".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.bar(X,Y_bought_dlt_super)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent on external DLT /£".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.bar(X,Y_sold_dlt_local)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses earnt on local DLT /£".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.bar(X,Y_sold_dlt_super)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses earnt on external DLT /£".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Dwellings DLT"), dpi=1200)
+            plt.clf()
+
+        plt.figure(2)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.bar(X,Y_bought_battery_local)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent on local battery /£".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.bar(X,Y_bought_battery_super)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent on external battery /£".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.bar(X,Y_sold_battery_local)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses earnt on local battery /£".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.bar(X,Y_sold_battery_super)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses earnt on external battery /£".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Dwellings Battery"), dpi=1200)
+            plt.clf()
+
+        plt.figure(3)
+        plt.rc('font', size=3) 
+        plt.subplot(2,1,1)
+        plt.bar(X,Y_bought_panel_local)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent on local system panel /£".format(self.desc))
+        plt.subplot(2,1,2)
+        plt.bar(X,Y_bought_panel_super)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent on external system panel /£".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Dwellings Panel"), dpi=1200)
+            plt.clf()
+
+        plt.figure(4)
+        plt.rc('font', size=3) 
+        plt.subplot(2,2,1)
+        plt.bar(X,Y_expend)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent net /£".format(self.desc))
+        plt.subplot(2,2,2)
+        plt.bar(X,Y_expend_grid)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses spent on grid /£".format(self.desc))
+        plt.subplot(2,2,3)
+        plt.bar(X,Y_earn_grid)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses earnt from grid /£".format(self.desc))
+        plt.subplot(2,2,4)
+        plt.bar(X,Y_price_per)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses value £/kWh".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Dwellings General"), dpi=1200)
+            plt.clf()
+
+        plt.figure(5)
+        plt.rc('font', size=3) 
+        plt.bar(X,Y_percent)
+        plt.xticks(rotation="vertical")
+        plt.title("{}: Houses save compared to grid /%".format(self.desc))
+
+        if dump:
+            plt.savefig(os.path.join(path,"Dwellings Overall Percent Saving"), dpi=1200)
+            plt.clf()
+
+        if not dump:
+            plt.show()
+
+class household():
+    def __init__(self,a, o, sol, dem, sys):
+        self.system = sys
+        self.address = int(a)
+        self.income = 0
+        self.occupants = o
+        self.net = 0
+        sys.household_list.append(self) 
+
+        # RECORDS #
+
+        self.demand = dem
+        self.solar = sol
+        self.wasted = [0]*self.system.length
+        self.bought_grid = [0]*self.system.length
+
+        self.bought_dlt_local = [0]*self.system.length
+        self.bought_dlt_super = [0]*self.system.length
+        self.sold_dlt_local = [0]*self.system.length
+        self.sold_dlt_super = [0]*self.system.length
+
+        self.bought_battery_local = [0]*self.system.length
+        self.bought_battery_super = [0]*self.system.length
+        self.sold_battery_local = [0]*self.system.length
+        self.sold_battery_super = [0]*self.system.length
+
+        self.bought_panel_local = [0]*self.system.length
+        self.bought_panel_super = [0]*self.system.length
+
+        self.grid_export = [0]*self.system.length
+
+        # TOTALS #
+
+        self.demand_total = 0
+        self.solar_total = 0
+        self.wasted_total = 0
+        self.bought_grid_total = 0
+
+        self.bought_dlt_local_total = 0
+        self.bought_dlt_super_total = 0
+        self.sold_dlt_local_total = 0
+        self.sold_dlt_super_total = 0
+
+        self.bought_battery_local_total = 0
+        self.bought_battery_super_total = 0
+        self.sold_battery_local_total = 0
+        self.sold_battery_super_total = 0
+
+        self.bought_panel_local_total = 0
+        self.bought_panel_super_total = 0
+
+        self.grid_export_total = 0
+
+        # ECONOMIES #
+
+        self.expend_grid = 0
+
+        self.expend_dlt_local = 0
+        self.expend_dlt_super = 0
+        self.earn_dlt_local = 0
+        self.earn_dlt_super = 0
+
+        self.expend_battery_local = 0
+        self.expend_battery_super = 0
+        self.earn_battery_local = 0
+        self.earn_battery_super = 0
+
+        self.expend_panel_local = 0
+        self.expend_panel_super = 0
+
+        self.spend = 0
+        self.earn = 0
+        self.net_spend = 0
+
+        self.percent = 0
+
+    def evaluate(self, minute, show_more_less=False):
+
+        self.net = self.demand[minute] - self.solar[minute]
+
+        if show_more_less:
+            self.moreless()
+
+        if self.net > 0:
+            self.system.queue.append(self)
+        else:
+            self.system.suppliers.append(self)
+
+    def evaluate_super_system(self, minute, show_more_less=False):
+
+        if show_more_less:
+            self.moreless()
+
+        if self.net > 0:
+            self.system.environment.queue.append(self)
+        else:
+            self.system.environment.suppliers.append(self)
+
+    def moreless(self):
+
+        if self.net > 0:
+            print("house {} needs to buy ({})".format(self.address, self.net))
+        else:
+            print("house {} can spare ({})".format(self.address, -self.net))
+
+    def info(self, print_all=True):
+
+        self.demand_total = 0
+        self.solar_total = 0
+        self.wasted_total = 0
+        self.bought_grid_total = 0
+
+        self.bought_dlt_local_total = 0
+        self.bought_dlt_super_total = 0
+        self.sold_dlt_local_total = 0
+        self.sold_dlt_super_total = 0
+
+        self.bought_battery_local_total = 0
+        self.bought_battery_super_total = 0
+        self.sold_battery_local_total = 0
+        self.sold_battery_local_total = 0
+
+        self.bought_panel_local_total = 0
+        self.bought_panel_super_total = 0
+
+        self.grid_export_total = 0
+
+        # SUM USAGES #
+
+        self.demand_total = sum(self.demand) / 60
+        self.solar_total = sum(self.solar) / 60
+        self.wasted_total = sum(self.wasted) / 60
+        self.bought_grid_total = sum(self.bought_grid) / 60
+
+        self.bought_dlt_local_total = sum(self.bought_dlt_local) / 60
+        self.bought_dlt_super_total = sum(self.bought_dlt_super) / 60
+        self.sold_dlt_local_total = sum(self.sold_dlt_local) / 60
+        self.sold_dlt_super_total = sum(self.sold_dlt_super) / 60
+
+        self.bought_battery_local_total = sum(self.bought_battery_local) / 60
+        self.bought_battery_super_total = sum(self.bought_battery_super) / 60
+        self.sold_battery_local_total = sum(self.sold_battery_local) / 60
+        self.sold_battery_super_total = sum(self.sold_battery_super) / 60
+
+        self.bought_panel_local_total = sum(self.bought_panel_local) / 60
+        self.bought_panel_super_total = sum(self.bought_panel_super) / 60
+
+        self.grid_export_total = sum(self.grid_export) / 60
+
+        # CALCULATE COSTS #
+
+        self.expend_grid = self.bought_grid_total * self.system.grid_price
+
+        self.expend_dlt_local = self.bought_dlt_local_total * self.system.dlt_price
+        self.expend_dlt_super = self.bought_dlt_super_total * self.system.dlt_price
+        self.earn_dlt_local = self.sold_dlt_local_total * self.system.dlt_price
+        self.earn_dlt_super = self.sold_dlt_super_total * self.system.dlt_price
+
+        self.expend_battery_local = self.bought_battery_local_total * self.system.battery_price
+        self.expend_battery_super = self.bought_battery_super_total * self.system.battery_price
+        self.earn_battery_local = self.sold_battery_local_total * self.system.battery_price
+        self.earn_battery_super = self.sold_battery_super_total * self.system.battery_price
+
+        self.expend_panel_local = self.bought_panel_local_total * self.system.dlt_price
+        self.expend_panel_super = self.bought_panel_super_total * self.system.dlt_price
+
+        self.earn_grid = self.grid_export_total * self.system.grid_sell
+
+        # SUM COSTS #
+
+        self.spend = self.expend_grid  + self.expend_dlt_local + self.expend_dlt_super + self.expend_battery_local + self.expend_battery_super + self.expend_panel_local + self.expend_panel_super
+        self.earn = self.earn_dlt_local + self.earn_dlt_super + self.earn_battery_local + self.earn_battery_super + self.earn_grid
+        self.net_spend = self.spend - self.earn
+
+        would_have_been_hard = self.demand_total * self.system.grid_price
+
+        self.percent = 100 - self.net_spend / would_have_been_hard * 100
+
+        if print_all:
+            print("\nHouse {}:".format(self.address))
+            print("Total Demand: {:.3f}kWh".format(self.demand_total/1000))
+            print("Total Solar: {:.3f}kWh".format(self.solar_total/1000))
+            print("Total Wasted: {:.3f}kWh".format(self.wasted_total/1000))
+            print("Total Bought Grid: {:.3f}kWh (£{:.3f})" .format(self.bought_grid_total/1000, self.expend_grid))
+            print("Total (Sold) Grid: {:.3f}kWh (£{:.3f})" .format(self.grid_export_total/1000, self.earn_grid))
+
+            print("Total Bought Local DLT: {:.3f}kWh (£{:.3f})".format(self.bought_dlt_local_total/1000, self.expend_dlt_local))
+            print("Total Bought Super DLT: {:.3f}kWh (£{:.3f})".format(self.bought_dlt_super_total/1000, self.expend_dlt_super))
+            print("Total Sold Local DLT: {:.3f}kWh (£{:.3f})".format(self.sold_dlt_local_total/1000, self.earn_dlt_local))
+            print("Total Sold Super DLT: {:.3f}kWh (£{:.3f})".format(self.sold_dlt_super_total/1000, self.earn_dlt_super))
+
+            print("Total Bought Local Battery: {:.3f}kWh (£{:.3f})".format(self.bought_battery_local_total/1000, self.expend_battery_local))
+            print("Total Bought Super Battery: {:.3f}kWh (£{:.3f})".format(self.bought_battery_super_total/1000, self.expend_battery_super))
+            print("Total Sold Local Battery: {:.2f}kWh (£{:.3f})".format(self.sold_battery_local_total/1000, self.earn_battery_local))
+            print("Total Sold Super Battery: {:.2f}kWh (£{:.3f})".format(self.sold_battery_super_total/1000, self.earn_battery_super))
+
+            print("Total Bought Local System Panel {:.3f}kWh (£{:.3f})".format(self.bought_panel_local_total/1000, self.expend_panel_local))
+            print("Total Bought Super System Panel {:.3f}kWh (£{:.3f})".format(self.bought_panel_super_total/1000, self.expend_panel_super))
+            
+            print("Net spend: £{:.3f}".format(self.net_spend))
+            print("Saving compared to grid: {:.3f}%".format(self.percent))
+
+    def plot(self, start, end):
+
+        X = [i for i in range(start, end)]
+
+        plt.figure(1)
+        plt.subplot(2,2,1)
+        plt.plot(X,self.demand)
+        plt.title("{}: Demand /kW".format(self.address))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.solar)
+        plt.title("{}: Solar /kW".format(self.address))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.wasted)
+        plt.title("{}: Wasted /kW".format(self.address))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.bought_grid)
+        plt.title("{}: Bought from grid /kW".format(self.address))
+
+        plt.figure(2)
+        plt.subplot(2,2,1)
+        plt.plot(X,self.bought_dlt_local)
+        plt.title("{}: Locally bought DLT /kW".format(self.address))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.bought_dlt_super)
+        plt.title("{}: Externally bought DLT /kW".format(self.address))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.sold_dlt_local)
+        plt.title("{}: Locally sold DLT /kW".format(self.address))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.sold_dlt_super)
+        plt.title("{}: Externally sold DLT /kW".format(self.address))
+
+        plt.figure(3)
+        plt.subplot(2,2,1)
+        plt.plot(X,self.bought_battery_local)
+        plt.title("{}: Battery bought locally /kW".format(self.address))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.bought_battery_super)
+        plt.title("{}: Battery bought externally /kW".format(self.address))
+        plt.subplot(2,2,3)
+        plt.plot(X,self.sold_battery_local)
+        plt.title("{}: Battery sold locally /kW".format(self.address))
+        plt.subplot(2,2,4)
+        plt.plot(X,self.sold_battery_super)
+        plt.title("{}: Battery sold externally /kW".format(self.address))
+
+        plt.figure(4)
+        plt.subplot(2,2,1)
+        plt.plot(X,self.bought_panel_local)
+        plt.title("{}: Panel used locally /kW".format(self.address))
+        plt.subplot(2,2,2)
+        plt.plot(X,self.bought_panel_super)
+        plt.title("{}: Panel used externaly /kW".format(self.address))
+
+        plt.show()
+
+    def buy(self,source,amount):
+
+        if source == "grid":
+            self.bought_grid[self.system.time] += amount
+            self.net -= amount
+
+        elif source == "battery":
+            self.bought_battery_local[self.system.time] += amount
+            self.system.battery_cap -= amount/60
+            self.system.battery_pwr_ins -= amount
+            self.net -= amount
+
+        elif source == "panel":
+            self.bought_panel_local[self.system.time] += amount
+            self.system.panel_pwr_ins -= amount
+            self.system.panel_used_local[self.system.time] += amount
+            self.net -= amount
+
+        else:
+            self.bought_dlt_local[self.system.time] += amount
+            source.sold_dlt_local[source.system.time] += amount
+
+            self.net -= amount
+            source.net += amount
+
+    def buy_across(self,source,system,amount):
+
+        if source == "grid":
+            self.bought_grid[self.system.time] += amount
+            self.net -= amount
+
+        elif source == "battery":
+            self.bought_battery_super[self.system.time] += amount
+            system.battery_use_super[system.time] += amount
+            system.battery_cap -= amount/60
+            system.battery_pwr_ins -= amount
+            self.net -= amount
+
+        elif source == "panel":
+            self.bought_panel_super[system.time] += amount
+            system.panel_pwr_ins -= amount
+            system.panel_used_super[system.time] += amount
+            self.net -= amount
+
+        else:
+            self.bought_dlt_super[system.time] += amount
+            source.sold_dlt_super[system.time] += amount
+
+            self.net -= amount
+            source.net += amount
+
+    def sell(self,source,amount):
+
+        self.system.battery_cap += amount/60
+        self.sold_battery_local[self.system.time] += amount
+
+    def sell_across(self,source,system,amount):
+
+        system.battery_cap += amount/60
+        self.sold_battery_super[system.time] += amount
+    
+    def grid_export_pool(self, amount):
+        self.grid_export[self.system.time] = amount
+
+########
+# MAIN #
+########
+
+# CREATE SYSTEMS #
+##################
+
+import_length = 1440
+sim_length = 1440*7
+reference_panel = 26.21167
+season = "summer"
+
+Bow = environment("Bow", 769)
+Bow.add_panel(1869.02)
+Bow.add_panel(1467.31)
+
+names = [
+    "Astra_House_1_18_Alfred_St",
+    "Bevin_House_1_16_Alfred_St",
+    "Byas_House_1_16_Bentworth_St",
+    "Electric_House_1_31_Bow_Rd",   
+    "Frye_Court_1_10_Bentworth_St",
+    "Harris_House_1_10_Alfred_St",
+    "Huggins_House_1_16_Alfred_St",
+    "Williams_House_1_18_Alfred_St",
+    "Guerin_Square_1_56",
+    "Heylyn_Square_1_70",
+    "Howcroft_House_1_64_Bentworth_St",
+    "Sheffield_Square_1_74",
+    "Trellis_Square_1_38",
+    "Addington_Rd_20_66",
+    "Ambrose_Walk_1_17",
+    "Ambrose_Walk_18_31",
+    "Ambrose_Walk_32_45",
+    "Caxton_Grove_2_24",
+    "Creswick_Walk_1_20",
+    "Creswick_Walk_21_36",
+    "Lawrence_Close_1_20",
+    "Lawrence_Close_21_38",
+    "Lawrence_Close_39_54",
+    "Lawrence_Close_55_85",
+    "Malmesbury_Rd_100_126",
+    "Malmesbury_Rd_128_162",
+    "Whitton_Walk_1_20",
+    "Whitton_Walk_21_38",
+    "Whitton_Walk_39_56",
+    "Whitton_Walk_57_70",
+    "Whitton_Walk_71_84",
+    "Whitton_Walk_85_98"
+]
+
+sizes = [
+    26.21166667,
+    26.5025,
+    36.68,
+    24.16387097,
+    25.902,
+    29.249,
+    28.41375,
+    25.78,
+    29.00625,
+    10.90471429,
+    17.79453125,
+    23.96486486,
+    35.95789474,
+    21.83625,
+    26.79705882,
+    32.02928571,
+    28.94857143,
+    36.7125,
+    27.5015,
+    28.08875,
+    30.1,
+    31.93833333,
+    27.893125,
+    29.00096774,
+    28.44071429,
+    40.12666667,
+    27.119,
+    22.71388889,
+    27.06555556,
+    41.825,
+    27.88928571,
+    27.74642857,
+]
+
+our_sizes = [sum(sizes)/len(sizes)]*len(sizes) 
+
+occupants = [
+    18,
+    16,
+    16,
+    31,
+    10,
+    10,
+    16,
+    18,
+    56,
+    70,
+    64,
+    74,
+    38,
+    24,
+    17,
+    14,
+    14,
+    12,
+    20,
+    16,
+    20,
+    18,
+    16,
+    31,
+    14,
+    18,
+    20,
+    18,
+    18,
+    14,
+    14,
+    14,
+]
+
+systems = {}
+sys_count = 0
+
+### ARE THE PANELS BEING AVERAGED ACCROSS THE SYSTEM ###
+
+sizes = our_sizes
+
+print(sizes)
+
+for name in names:
+
+    systems[name] = system(Bow, 1, name, import_length, sim_length)
+    systems[name].populate("Data/{}_dwellings.csv".format(name), "Data/{}_data_{}.csv".format(name, season), "Data/Weather/pv_{}.csv".format(season), sizes[sys_count], reference_panel)
+    for i in range(2,8):
+        systems[name].add_day(i, "Data/{}_data_{}.csv".format(name, season), "Data/Weather/pv_{}.csv".format(season), sizes[sys_count], reference_panel)
+
+    ### ADD PANELS / BATTERIES ###
+
+    systems[name].add_battery(100000, 30000, 30000)
+    #systems[name].distribute_panel(occupants[sys_count], sizes[sys_count])
+
+    sys_count+=1
+
+count_d = 0
+count_s = 0
+for system in Bow.system_list: 
+    count_d += len(system.household_list)
+    count_s += 1
+
+# LOOP DAY #
+############
+
+input("\nFinished Importing {} dwellings from {} systems, press key to start".format(count_d,count_s))
+
+print("\nRunning...")
+
+start = 0
+end = 1440*7
+
+# ARCHITECTURE OF YOUR CHOICE #
+###############################
+
+"""
+for m in range(start, end):
+    if m%60 == 0:
+        time(m)
+
+    for system in Bow.system_list:
+        system.time = m
+    
+        for house in system.household_list:
+            house.evaluate(m, show_more_less=False)
+        system.exchange_simple(m)
+"""
+
+"""
+for m in range(start,end):
+
+    if m%60 == 0:
+        time(m)
+
+    for system in Bow.system_list:
+        system.time = m
+    
+        for house in system.household_list:
+            house.evaluate(m, show_more_less=False)
+        system.exchange_weighted_super(m)
+
+    for system in Bow.system_list:
+
+        for house in system.household_list:
+            house.evaluate_super_system(m, show_more_less=False)
+    
+    Bow.exchange_weighted_system(m)
+"""
+
+for m in range(start,end):
+
+    if m%60 == 0:
+        time(m)
+
+    for system in Bow.system_list:
+        system.time = m
+
+    Bow.exchange_system_complete()
+
+
+# EVALUATE #
+############
+
+for system in Bow.system_list:
+    system.info(dump=False)
+
+Bow.compile()
+
+for system in Bow.system_list:
+    system.plot_houses(dump=True)
+
+for system in Bow.system_list:
+    system.plot(start, end, dump=True)
+
+# ENTER IN LINE USER INTERFACE #
+################################
+
+print("\nSimulation complete, entering evaluation")
+
+evaluate = True
+
+while evaluate:
+    try:
+        result = int(input("Select System (number): \n{}".format([x.desc for x in Bow.system_list])))
+        for i, x in enumerate(Bow.system_list):
+            if i+1 == result:
+                result = input("System plot & info (P) - House Comparison (H) - All system info (I) - Dwelling (D) - Exit (E)")
+                if result == "P":
+                    x.info(print_all=False)
+                    x.plot(start, end)
+                elif result == "H":
+                    x.plot_houses()
+                elif result == "I":
+                    x.info(print_all=True)
+                elif result == "D":
+                    result = int(input("Select dwelling (number): \n{}".format([y.address for y in x.household_list])))
+                    for j, y in enumerate(x.household_list):
+                        if j+1 == result:
+                            y.info()
+                            y.plot(start, end)
+                        else:
+                            pass
+                elif result == "E":
+                    evaluate = False
+                else:
+                    print("Invalid response")
+            else:
+                pass
+    except ValueError:
+        print("error")
+
+print("\nFinished")
