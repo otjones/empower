@@ -26,5 +26,5 @@ Also contains spring, summer, autumn and winter results for final model.
 *Warning*
 Raw data results is a 0.98 GB download, and 4.52 GB once extracted
 
-Raw data results cand be downloaded from:
+Raw data results cand be downloaded from: (Imperial College London members only)
 https://imperiallondon-my.sharepoint.com/:u:/g/personal/otj18_ic_ac_uk/ESJH8sDef71KobVR7sMx1dQBr2iB8RSwzHDaukBJGpzQ-g?e=JJIj4G
