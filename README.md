@@ -1,6 +1,9 @@
 # empower
 [EM]POWER is a Design Engineering futures project, looking at the future of energy and poverty in the UK, and how re-targeted investment in green energy can also benefit low income communities.
 
+Watch our project video here:
+https://youtu.be/A2HSdy3wrZA
+
 Repository for the source code, input data, and results of the EMPOWER environment simulation studies.
 
 Main code in repository, python 3
